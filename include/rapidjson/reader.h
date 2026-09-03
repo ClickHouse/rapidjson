@@ -50,7 +50,9 @@
 // Keyed on the compiler's architecture macros and not on RAPIDJSON_SSE2/RAPIDJSON_NEON: those also
 // define RAPIDJSON_SIMD, whose kernels stop only at a NUL sentinel and so read past the end of a
 // length-bounded buffer.
-#if defined(__ARM_NEON) || defined(__ARM_NEON__)
+// The NEON core recovers a byte index from a 64-bit lane with clzll, so it requires little-endian
+// lanes; __ARM_NEON is predefined on AArch64 irrespective of endianness.
+#if (defined(__ARM_NEON) || defined(__ARM_NEON__)) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #define RAPIDJSON_BOUNDED_SCANCOPY_NEON
 #include <arm_neon.h>
 #elif defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
