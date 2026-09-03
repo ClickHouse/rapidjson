@@ -42,6 +42,9 @@
     \ingroup RAPIDJSON_CONFIG
     \brief Enable the bounded SSE2/NEON string-body scan for length-bounded input streams.
 
+    Selects a core only where the compiler reports one: little-endian ARM NEON, or SSE2 on x86.
+    Defining it elsewhere, cl.exe included, is a no-op.
+
     Must be defined uniformly across the whole build: it selects members of GenericReader, so
     defining it in some translation units but not others is an ODR violation with no diagnostic.
 */
@@ -51,10 +54,10 @@
 #endif
 #endif // !defined(RAPIDJSON_BOUNDED_SCANCOPY)
 #ifdef RAPIDJSON_BOUNDED_SCANCOPY
-// Bounded counterpart of the RAPIDJSON_SIMD string-body scan, for length-bounded streams.
-// Keyed on the compiler's architecture macros and not on RAPIDJSON_SSE2/RAPIDJSON_NEON: those also
-// define RAPIDJSON_SIMD, whose kernels stop only at a NUL sentinel and so read past the end of a
-// length-bounded buffer.
+// Bounded counterpart of the RAPIDJSON_SIMD string-body scan, for length-bounded streams: those kernels
+// stop only at a NUL sentinel, so none of them can serve a stream whose end is a length.
+// Keyed on the compiler's architecture macros and not on RAPIDJSON_SSE2/RAPIDJSON_NEON, so that enabling
+// this kernel does not also enable RAPIDJSON_SIMD and every sentinel kernel with it.
 // The NEON core recovers a byte index from a 64-bit lane with clzll, so it requires little-endian
 // lanes; __ARM_NEON is predefined on AArch64 irrespective of endianness.
 #if (defined(__ARM_NEON) || defined(__ARM_NEON__)) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
