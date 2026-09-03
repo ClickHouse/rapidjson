@@ -38,6 +38,16 @@
 #include "rapidjson/reader.h"
 #include "rapidjson/writer.h"
 
+// The architecture macros are restated here, as at the top of this file, because RAPIDJSON_SSE2 and
+// RAPIDJSON_NEON are not the predicate the bounded kernel uses: on ppc64le __SSE2__ is defined by
+// SSE-over-AltiVec emulation and the bounded kernel correctly selects no core.
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY) \
+ && (((defined(__ARM_NEON) || defined(__ARM_NEON__)) && RAPIDJSON_ENDIAN == RAPIDJSON_LITTLEENDIAN) \
+     || (defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__)))) \
+ && !defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2) && !defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
+#error "RAPIDJSON_BOUNDED_SCANCOPY selected no core on a platform that provides one; the bounded arms below would silently test the scalar path"
+#endif
+
 #ifdef __GNUC__
 RAPIDJSON_DIAG_PUSH
 RAPIDJSON_DIAG_OFF(effc++)
@@ -221,7 +231,9 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedString)) {
 }
 
 // GenericStringStream<ASCII<> > has no ScanCopyUnescapedString overload of its own, so it reaches
-// the string body one code unit at a time. That makes it the reference for a transcoding reader.
+// the string body one code unit at a time. That makes it the reference below, where StringStream is
+// not: StringStream's overload exists and carries no encoding guard, so it agrees with an unguarded
+// bounded arm instead of contradicting it.
 struct AsciiStringStreamHolder {
     explicit AsciiStringStreamHolder(char* json) : s(json) {}
     GenericStringStream<ASCII<> >& Stream() { return s; }
@@ -295,13 +307,18 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedStringGuards)) {
     // A byte below 0x20 is not valid unescaped JSON, and no body in the sweep above contains one.
     MakeGuardedBody(json, '\x01');
     {
-        ParseOutcome sentinel, memory, encoded;
+        // The sentinel kernel's below-0x20 term is character-for-character the bounded one's, so it
+        // is a compared arm and not the reference; only the ASCII arm reads the body one unit at a
+        // time. Its corpus is all-ASCII, so it stops on the same byte at the same offset.
+        ParseOutcome scalar, sentinel, memory, encoded;
+        ParseThrough<GenericReader<ASCII<>, ASCII<> >, AsciiStringStreamHolder>(json, scalar);
         ParseThrough<Reader, StringStreamHolder>(json, sentinel);
         ParseThrough<Reader, MemoryStreamHolder>(json, memory);
         ParseThrough<Reader, EncodedMemoryStreamHolder>(json, encoded);
-        EXPECT_TRUE(sentinel.error);
-        ExpectSameOutcome(sentinel, memory);
-        ExpectSameOutcome(sentinel, encoded);
+        EXPECT_TRUE(scalar.error);
+        ExpectSameOutcome(scalar, sentinel);
+        ExpectSameOutcome(scalar, memory);
+        ExpectSameOutcome(scalar, encoded);
     }
 }
 
