@@ -220,6 +220,91 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedString)) {
     TestScanCopyUnescapedString<kParseDefaultFlags, ExactSizeMemoryStreamHolder>();
 }
 
+// GenericStringStream<ASCII<> > has no ScanCopyUnescapedString overload of its own, so it reaches
+// the string body one code unit at a time. That makes it the reference for a transcoding reader.
+struct AsciiStringStreamHolder {
+    explicit AsciiStringStreamHolder(char* json) : s(json) {}
+    GenericStringStream<ASCII<> >& Stream() { return s; }
+    GenericStringStream<ASCII<> > s;
+};
+
+// Everything two paths over the same document must agree on.
+struct ParseOutcome {
+    ParseOutcome() : error(false), code(kParseErrorNone), offset(0) { body[0] = '\0'; }
+    bool error;
+    ParseErrorCode code;
+    size_t offset;
+    char body[1024 + 5 + 32];
+};
+
+template <typename ReaderType, typename StreamHolder>
+void ParseThrough(char* json, ParseOutcome& out) {
+    StreamHolder s(json);
+    ReaderType reader;
+    ScanCopyUnescapedStringHandler h;
+    h.buffer[0] = '\0';
+    reader.template Parse<kParseDefaultFlags>(s.Stream(), h);
+    out.error = reader.HasParseError();
+    out.code = reader.GetParseErrorCode();
+    out.offset = reader.GetErrorOffset();
+    strcpy(out.body, h.buffer);
+}
+
+void ExpectSameOutcome(const ParseOutcome& expected, const ParseOutcome& actual) {
+    EXPECT_EQ(expected.error, actual.error);
+    EXPECT_EQ(expected.code, actual.code);
+    EXPECT_EQ(expected.offset, actual.offset);
+    EXPECT_STREQ(expected.body, actual.body);
+}
+
+// One offending byte surrounded by 16 ordinary ones on each side, so that it falls inside a full
+// 16-byte block: that is the only place a vector path can copy it without stopping.
+void MakeGuardedBody(char* out, char offender) {
+    char* p = out;
+    *p++ = '\"';
+    for (size_t i = 0; i < 16; i++)
+        *p++ = 'A';
+    *p++ = offender;
+    for (size_t i = 0; i < 16; i++)
+        *p++ = 'A';
+    *p++ = '\"';
+    *p = '\0';
+}
+
+// Two properties of the bounded scan that the sweep above cannot reach: it must decline when the
+// source and target encodings differ, and it must stop at a byte below 0x20. Each case parses one
+// document through a path that has no bounded overload and through the bounded ones, and requires
+// them to agree; the first arm supplies the expected values, so no error code is hard-coded here.
+TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedStringGuards)) {
+    char json[SIMD_SIZE_ALIGN(64) + 32];
+
+    // Unequal encodings. A raw block copy would hand the byte to the handler untranscoded, so the
+    // overloads decline and the transcoder rejects it instead. ASCII<> is the source and not the
+    // target because ASCII<>::Encode asserts on a non-ASCII codepoint.
+    MakeGuardedBody(json, static_cast<char>(0xA2));
+    {
+        ParseOutcome scalar, memory, encoded;
+        ParseThrough<GenericReader<ASCII<>, UTF8<> >, AsciiStringStreamHolder>(json, scalar);
+        ParseThrough<GenericReader<ASCII<>, UTF8<> >, MemoryStreamHolder>(json, memory);
+        ParseThrough<GenericReader<ASCII<>, UTF8<> >, EncodedMemoryStreamHolder>(json, encoded);
+        EXPECT_TRUE(scalar.error);  // otherwise the arms below agree on nothing having happened
+        ExpectSameOutcome(scalar, memory);
+        ExpectSameOutcome(scalar, encoded);
+    }
+
+    // A byte below 0x20 is not valid unescaped JSON, and no body in the sweep above contains one.
+    MakeGuardedBody(json, '\x01');
+    {
+        ParseOutcome sentinel, memory, encoded;
+        ParseThrough<Reader, StringStreamHolder>(json, sentinel);
+        ParseThrough<Reader, MemoryStreamHolder>(json, memory);
+        ParseThrough<Reader, EncodedMemoryStreamHolder>(json, encoded);
+        EXPECT_TRUE(sentinel.error);
+        ExpectSameOutcome(sentinel, memory);
+        ExpectSameOutcome(sentinel, encoded);
+    }
+}
+
 TEST(SIMD, SIMD_SUFFIX(ScanWriteUnescapedString)) {
     char buffer[SIMD_SIZE_ALIGN(2048 + 1 + 32)];
     for (size_t offset = 0; offset < 32; offset++) {
