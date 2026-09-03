@@ -143,6 +143,19 @@ struct EncodedMemoryStreamHolder {
     EncodedInputStream<UTF8<>, MemoryStream> s;
 };
 
+// The length bound, not a NUL sentinel, is what keeps the kernel inside its input, so one shape holds
+// the document in an exact-size allocation with nothing behind it.
+struct ExactSizeMemoryStreamHolder {
+    explicit ExactSizeMemoryStreamHolder(char* json) : n(strlen(json)), buf(new char[n]), s(buf, n) {
+        memcpy(buf, json, n);
+    }
+    ~ExactSizeMemoryStreamHolder() { delete[] buf; }
+    MemoryStream& Stream() { return s; }
+    size_t n;
+    char* buf;          // declared before s, which points into it
+    MemoryStream s;
+};
+
 template <unsigned parseFlags, typename StreamHolder>
 void TestScanCopyUnescapedString() {
     char buffer[SIMD_SIZE_ALIGN(1024u + 5 + 32)];
@@ -204,6 +217,7 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedString)) {
     // MemoryStream::PutBegin() asserts.
     TestScanCopyUnescapedString<kParseDefaultFlags, MemoryStreamHolder>();
     TestScanCopyUnescapedString<kParseDefaultFlags, EncodedMemoryStreamHolder>();
+    TestScanCopyUnescapedString<kParseDefaultFlags, ExactSizeMemoryStreamHolder>();
 }
 
 TEST(SIMD, SIMD_SUFFIX(ScanWriteUnescapedString)) {
