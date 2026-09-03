@@ -47,6 +47,10 @@
 
     Must be defined uniformly across the whole build: it selects members of GenericReader, so
     defining it in some translation units but not others is an ODR violation with no diagnostic.
+    What has to be uniform is the selected core, not just the macro: the header derives the core
+    from __SSE2__ and __ARM_NEON, which follow each translation unit's own architecture flags
+    (-msse2, -mfpu=neon), so defining the macro everywhere while varying those flags leaves the
+    same silent ODR violation.
 */
 #ifndef RAPIDJSON_BOUNDED_SCANCOPY
 #ifdef RAPIDJSON_DOXYGEN_RUNNING
@@ -59,8 +63,8 @@
 // Keyed on the compiler's architecture macros and not on RAPIDJSON_SSE2/RAPIDJSON_NEON, so that enabling
 // this kernel does not also enable RAPIDJSON_SIMD and every sentinel kernel with it.
 // The NEON core recovers a byte index from a 64-bit lane with clzll, so it requires little-endian
-// lanes; __ARM_NEON is predefined on AArch64 irrespective of endianness.
-#if (defined(__ARM_NEON) || defined(__ARM_NEON__)) && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+// lanes; __ARM_NEON is predefined on AArch64 irrespective of endianness, so RAPIDJSON_ENDIAN decides.
+#if (defined(__ARM_NEON) || defined(__ARM_NEON__)) && RAPIDJSON_ENDIAN == RAPIDJSON_LITTLEENDIAN
 #define RAPIDJSON_BOUNDED_SCANCOPY_NEON
 #include <arm_neon.h>
 #elif defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
