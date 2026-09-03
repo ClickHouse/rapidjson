@@ -25,6 +25,10 @@
 #  define RAPIDJSON_NEON
 #endif
 
+// The library derives the bounded kernel from the same architecture macros, but never enables it on
+// its own; a consumer opts in, and so does this test.
+#define RAPIDJSON_BOUNDED_SCANCOPY
+
 #define RAPIDJSON_NAMESPACE rapidjson_simd
 
 #include "unittest.h"
@@ -107,7 +111,37 @@ struct ScanCopyUnescapedStringHandler : BaseReaderHandler<UTF8<>, ScanCopyUnesca
     char buffer[1024 + 5 + 32];
 };
 
-template <unsigned parseFlags, typename StreamType>
+// The sweep below builds one buffer and hands it to the stream, but a length-bounded stream also
+// needs the length, and EncodedInputStream needs a stream to reference. These holders give every
+// shape that one-argument form. Stream() returns the stream by its own type, which is what makes
+// the sweep meaningful: passing an adapter to Parse would select the generic no-op
+// ScanCopyUnescapedString and exercise nothing.
+struct StringStreamHolder {
+    explicit StringStreamHolder(char* json) : s(json) {}
+    StringStream& Stream() { return s; }
+    StringStream s;
+};
+
+struct InsituStringStreamHolder {
+    explicit InsituStringStreamHolder(char* json) : s(json) {}
+    InsituStringStream& Stream() { return s; }
+    InsituStringStream s;
+};
+
+struct MemoryStreamHolder {
+    explicit MemoryStreamHolder(char* json) : s(json, strlen(json)) {}
+    MemoryStream& Stream() { return s; }
+    MemoryStream s;
+};
+
+struct EncodedMemoryStreamHolder {
+    explicit EncodedMemoryStreamHolder(char* json) : ms(json, strlen(json)), s(ms) {}
+    EncodedInputStream<UTF8<>, MemoryStream>& Stream() { return s; }
+    MemoryStream ms;    // declared before s, which holds a reference to it
+    EncodedInputStream<UTF8<>, MemoryStream> s;
+};
+
+template <unsigned parseFlags, typename StreamHolder>
 void TestScanCopyUnescapedString() {
     char buffer[SIMD_SIZE_ALIGN(1024u + 5 + 32)];
     char backup[SIMD_SIZE_ALIGN(1024u + 5 + 32)];
@@ -126,10 +160,10 @@ void TestScanCopyUnescapedString() {
             *p++ = '\0';
             strcpy(backup, json); // insitu parsing will overwrite buffer, so need to backup first
 
-            StreamType s(json);
+            StreamHolder s(json);
             Reader reader;
             ScanCopyUnescapedStringHandler h;
-            reader.Parse<parseFlags>(s, h);
+            reader.Parse<parseFlags>(s.Stream(), h);
             EXPECT_TRUE(memcmp(h.buffer, backup + 1, step) == 0);
             EXPECT_EQ('\\', h.buffer[step]);    // escaped
             EXPECT_EQ('\0', h.buffer[step + 1]);
@@ -150,10 +184,10 @@ void TestScanCopyUnescapedString() {
             *p++ = '\0';
             strcpy(backup, json); // insitu parsing will overwrite buffer, so need to backup first
 
-            StreamType s(json);
+            StreamHolder s(json);
             Reader reader;
             ScanCopyUnescapedStringHandler h;
-            reader.Parse<parseFlags>(s, h);
+            reader.Parse<parseFlags>(s.Stream(), h);
             EXPECT_TRUE(memcmp(h.buffer + 1, backup + 3, step) == 0);
             EXPECT_EQ('\\', h.buffer[0]);    // escaped
             EXPECT_EQ('\0', h.buffer[step + 1]);
@@ -162,8 +196,12 @@ void TestScanCopyUnescapedString() {
 }
 
 TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedString)) {
-    TestScanCopyUnescapedString<kParseDefaultFlags, StringStream>();
-    TestScanCopyUnescapedString<kParseInsituFlag, InsituStringStream>();
+    TestScanCopyUnescapedString<kParseDefaultFlags, StringStreamHolder>();
+    TestScanCopyUnescapedString<kParseInsituFlag, InsituStringStreamHolder>();
+    // Length-bounded shapes, which the bounded kernel serves. Insitu is not among them:
+    // MemoryStream::PutBegin() asserts.
+    TestScanCopyUnescapedString<kParseDefaultFlags, MemoryStreamHolder>();
+    TestScanCopyUnescapedString<kParseDefaultFlags, EncodedMemoryStreamHolder>();
 }
 
 TEST(SIMD, SIMD_SUFFIX(ScanWriteUnescapedString)) {
