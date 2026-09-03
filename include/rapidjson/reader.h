@@ -49,8 +49,9 @@
     defining it in some translation units but not others is an ODR violation with no diagnostic.
     What has to be uniform is the selected core, not just the macro: the header derives the core
     from __SSE2__ and __ARM_NEON, which follow each translation unit's own architecture flags
-    (-msse2, -mfpu=neon), so defining the macro everywhere while varying those flags leaves the
-    same silent ODR violation.
+    (-msse2, -mfpu=neon), and from RAPIDJSON_ENDIAN, which a consumer may override per translation
+    unit, so defining the macro everywhere while varying any of those leaves the same silent ODR
+    violation.
 */
 #ifndef RAPIDJSON_BOUNDED_SCANCOPY
 #ifdef RAPIDJSON_DOXYGEN_RUNNING
