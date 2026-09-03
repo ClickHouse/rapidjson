@@ -25,12 +25,32 @@
 #  define RAPIDJSON_NEON
 #endif
 
+#ifndef RAPIDJSON_BOUNDED_SCANCOPY
+// The library derives the bounded kernel from the same architecture macros, but never enables it on
+// its own; a consumer opts in, and so does this test.
+#define RAPIDJSON_BOUNDED_SCANCOPY
+#endif
+
+// The bounded core produces the same bytes as the scalar path it replaces, so entry into it is not
+// observable from any parse result. The library offers this hook for exactly that; count entries.
+// Qualified, because the macro expands inside a member of GenericReader.
+unsigned long long g_boundedCoreEntries = 0;
+#define RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE() (++::g_boundedCoreEntries)
+
 #define RAPIDJSON_NAMESPACE rapidjson_simd
 
 #include "unittest.h"
 
 #include "rapidjson/reader.h"
 #include "rapidjson/writer.h"
+
+// RAPIDJSON_SSE2 and RAPIDJSON_NEON above are not the predicate the bounded kernel uses: it declines
+// on some targets that define them. The header publishes its own predicate, so the architecture terms
+// are not restated here and the two cannot drift.
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_PLATFORM) \
+ && !defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2) && !defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
+#error "RAPIDJSON_BOUNDED_SCANCOPY selected no core on a platform that provides one; the bounded arms below would silently test the scalar path"
+#endif
 
 #ifdef __GNUC__
 RAPIDJSON_DIAG_PUSH
@@ -107,7 +127,50 @@ struct ScanCopyUnescapedStringHandler : BaseReaderHandler<UTF8<>, ScanCopyUnesca
     char buffer[1024 + 5 + 32];
 };
 
-template <unsigned parseFlags, typename StreamType>
+// The sweep below builds one buffer and hands it to the stream, but a length-bounded stream also
+// needs the length, and EncodedInputStream needs a stream to reference. These holders give every
+// shape that one-argument form. Stream() returns the stream by its own type, which is what makes
+// the sweep meaningful: passing an adapter to Parse would select the generic no-op
+// ScanCopyUnescapedString and exercise nothing.
+struct StringStreamHolder {
+    explicit StringStreamHolder(char* json) : s(json) {}
+    StringStream& Stream() { return s; }
+    StringStream s;
+};
+
+struct InsituStringStreamHolder {
+    explicit InsituStringStreamHolder(char* json) : s(json) {}
+    InsituStringStream& Stream() { return s; }
+    InsituStringStream s;
+};
+
+struct MemoryStreamHolder {
+    explicit MemoryStreamHolder(char* json) : s(json, strlen(json)) {}
+    MemoryStream& Stream() { return s; }
+    MemoryStream s;
+};
+
+struct EncodedMemoryStreamHolder {
+    explicit EncodedMemoryStreamHolder(char* json) : ms(json, strlen(json)), s(ms) {}
+    EncodedInputStream<UTF8<>, MemoryStream>& Stream() { return s; }
+    MemoryStream ms;    // declared before s, which holds a reference to it
+    EncodedInputStream<UTF8<>, MemoryStream> s;
+};
+
+// The length bound, not a NUL sentinel, is what keeps the kernel inside its input, so one shape holds
+// the document in an exact-size allocation with nothing behind it.
+struct ExactSizeMemoryStreamHolder {
+    explicit ExactSizeMemoryStreamHolder(char* json) : n(strlen(json)), buf(new char[n]), s(buf, n) {
+        memcpy(buf, json, n);
+    }
+    ~ExactSizeMemoryStreamHolder() { delete[] buf; }
+    MemoryStream& Stream() { return s; }
+    size_t n;
+    char* buf;          // declared before s, which points into it
+    MemoryStream s;
+};
+
+template <unsigned parseFlags, typename StreamHolder>
 void TestScanCopyUnescapedString() {
     char buffer[SIMD_SIZE_ALIGN(1024u + 5 + 32)];
     char backup[SIMD_SIZE_ALIGN(1024u + 5 + 32)];
@@ -126,10 +189,10 @@ void TestScanCopyUnescapedString() {
             *p++ = '\0';
             strcpy(backup, json); // insitu parsing will overwrite buffer, so need to backup first
 
-            StreamType s(json);
+            StreamHolder s(json);
             Reader reader;
             ScanCopyUnescapedStringHandler h;
-            reader.Parse<parseFlags>(s, h);
+            reader.Parse<parseFlags>(s.Stream(), h);
             EXPECT_TRUE(memcmp(h.buffer, backup + 1, step) == 0);
             EXPECT_EQ('\\', h.buffer[step]);    // escaped
             EXPECT_EQ('\0', h.buffer[step + 1]);
@@ -150,10 +213,10 @@ void TestScanCopyUnescapedString() {
             *p++ = '\0';
             strcpy(backup, json); // insitu parsing will overwrite buffer, so need to backup first
 
-            StreamType s(json);
+            StreamHolder s(json);
             Reader reader;
             ScanCopyUnescapedStringHandler h;
-            reader.Parse<parseFlags>(s, h);
+            reader.Parse<parseFlags>(s.Stream(), h);
             EXPECT_TRUE(memcmp(h.buffer + 1, backup + 3, step) == 0);
             EXPECT_EQ('\\', h.buffer[0]);    // escaped
             EXPECT_EQ('\0', h.buffer[step + 1]);
@@ -162,9 +225,137 @@ void TestScanCopyUnescapedString() {
 }
 
 TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedString)) {
-    TestScanCopyUnescapedString<kParseDefaultFlags, StringStream>();
-    TestScanCopyUnescapedString<kParseInsituFlag, InsituStringStream>();
+    // Each shape is bracketed by the entry counter, because the bounded core emits the same bytes as
+    // the scalar path: with the core never entered, every assertion inside the sweep still passes.
+    unsigned long long before;
+
+    before = g_boundedCoreEntries;
+    TestScanCopyUnescapedString<kParseDefaultFlags, StringStreamHolder>();
+    EXPECT_EQ(before, g_boundedCoreEntries);    // sentinel-terminated: no bounded overload
+
+    before = g_boundedCoreEntries;
+    TestScanCopyUnescapedString<kParseInsituFlag, InsituStringStreamHolder>();
+    EXPECT_EQ(before, g_boundedCoreEntries);
+
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2) || defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
+    // Length-bounded shapes, which the bounded kernel serves. Insitu is not among them:
+    // MemoryStream::PutBegin() asserts.
+    before = g_boundedCoreEntries;
+    TestScanCopyUnescapedString<kParseDefaultFlags, MemoryStreamHolder>();
+    EXPECT_LT(before, g_boundedCoreEntries);
+
+    before = g_boundedCoreEntries;
+    TestScanCopyUnescapedString<kParseDefaultFlags, EncodedMemoryStreamHolder>();
+    EXPECT_LT(before, g_boundedCoreEntries);
+
+    before = g_boundedCoreEntries;
+    TestScanCopyUnescapedString<kParseDefaultFlags, ExactSizeMemoryStreamHolder>();
+    EXPECT_LT(before, g_boundedCoreEntries);
+#endif
 }
+
+// GenericStringStream<ASCII<> > has no ScanCopyUnescapedString overload of its own, so it reaches
+// the string body one code unit at a time. That makes it the reference below, where StringStream is
+// not: StringStream's overload exists and carries no encoding guard, so it agrees with an unguarded
+// bounded arm instead of contradicting it.
+struct AsciiStringStreamHolder {
+    explicit AsciiStringStreamHolder(char* json) : s(json) {}
+    GenericStringStream<ASCII<> >& Stream() { return s; }
+    GenericStringStream<ASCII<> > s;
+};
+
+// Everything two paths over the same document must agree on.
+struct ParseOutcome {
+    ParseOutcome() : error(false), code(kParseErrorNone), offset(0) { body[0] = '\0'; }
+    bool error;
+    ParseErrorCode code;
+    size_t offset;
+    char body[1024 + 5 + 32];
+};
+
+template <typename ReaderType, typename StreamHolder>
+void ParseThrough(char* json, ParseOutcome& out) {
+    StreamHolder s(json);
+    ReaderType reader;
+    ScanCopyUnescapedStringHandler h;
+    h.buffer[0] = '\0';
+    reader.template Parse<kParseDefaultFlags>(s.Stream(), h);
+    out.error = reader.HasParseError();
+    out.code = reader.GetParseErrorCode();
+    out.offset = reader.GetErrorOffset();
+    strcpy(out.body, h.buffer);
+}
+
+void ExpectSameOutcome(const ParseOutcome& expected, const ParseOutcome& actual) {
+    EXPECT_EQ(expected.error, actual.error);
+    EXPECT_EQ(expected.code, actual.code);
+    EXPECT_EQ(expected.offset, actual.offset);
+    EXPECT_STREQ(expected.body, actual.body);
+}
+
+// One offending byte surrounded by 16 ordinary ones on each side, so that it falls inside a full
+// 16-byte block: that is the only place a vector path can copy it without stopping.
+void MakeGuardedBody(char* out, char offender) {
+    char* p = out;
+    *p++ = '\"';
+    for (size_t i = 0; i < 16; i++)
+        *p++ = 'A';
+    *p++ = offender;
+    for (size_t i = 0; i < 16; i++)
+        *p++ = 'A';
+    *p++ = '\"';
+    *p = '\0';
+}
+
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2) || defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
+// Two properties of the bounded scan that the sweep above cannot reach: it must decline when the
+// source and target encodings differ, and it must stop at a byte below 0x20. Each case parses one
+// document through a path that has no bounded overload and through the bounded ones, and requires
+// them to agree; the first arm supplies the expected values, so no error code is hard-coded here.
+TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedStringGuards)) {
+    char json[SIMD_SIZE_ALIGN(64) + 32];
+
+    // Unequal encodings. A raw block copy would hand the byte to the handler untranscoded, so the
+    // overloads decline and the transcoder rejects it instead. ASCII<> is the source and not the
+    // target because ASCII<>::Encode asserts on a non-ASCII codepoint.
+    MakeGuardedBody(json, static_cast<char>(0xA2));
+    {
+        ParseOutcome scalar, memory, encoded, sameEncoding;
+        ParseThrough<GenericReader<ASCII<>, UTF8<> >, AsciiStringStreamHolder>(json, scalar);
+        const unsigned long long beforeGuarded = g_boundedCoreEntries;
+        ParseThrough<GenericReader<ASCII<>, UTF8<> >, MemoryStreamHolder>(json, memory);
+        ParseThrough<GenericReader<ASCII<>, UTF8<> >, EncodedMemoryStreamHolder>(json, encoded);
+        EXPECT_EQ(beforeGuarded, g_boundedCoreEntries);     // declined before reaching the core
+        EXPECT_TRUE(scalar.error);  // otherwise the arms below agree on nothing having happened
+        ExpectSameOutcome(scalar, memory);
+        ExpectSameOutcome(scalar, encoded);
+        // Same document, same shape, encodings equal: only the counter is asserted, because for
+        // UTF8 to UTF8 the byte is ordinary text, so this arm parses and its outcome differs.
+        const unsigned long long beforeSame = g_boundedCoreEntries;
+        ParseThrough<Reader, MemoryStreamHolder>(json, sameEncoding);
+        EXPECT_LT(beforeSame, g_boundedCoreEntries);
+    }
+
+    // A byte below 0x20 is not valid unescaped JSON, and no body in the sweep above contains one.
+    MakeGuardedBody(json, '\x01');
+    {
+        // The sentinel kernel's below-0x20 term is character-for-character the bounded one's, so it
+        // is a compared arm and not the reference; only the ASCII arm reads the body one unit at a
+        // time. Its corpus is all-ASCII, so it stops on the same byte at the same offset.
+        ParseOutcome scalar, sentinel, memory, encoded;
+        ParseThrough<GenericReader<ASCII<>, ASCII<> >, AsciiStringStreamHolder>(json, scalar);
+        ParseThrough<Reader, StringStreamHolder>(json, sentinel);
+        const unsigned long long before = g_boundedCoreEntries;
+        ParseThrough<Reader, MemoryStreamHolder>(json, memory);
+        ParseThrough<Reader, EncodedMemoryStreamHolder>(json, encoded);
+        EXPECT_LT(before, g_boundedCoreEntries);    // the core ran and stopped at the byte itself
+        EXPECT_TRUE(scalar.error);
+        ExpectSameOutcome(scalar, sentinel);
+        ExpectSameOutcome(scalar, memory);
+        ExpectSameOutcome(scalar, encoded);
+    }
+}
+#endif
 
 TEST(SIMD, SIMD_SUFFIX(ScanWriteUnescapedString)) {
     char buffer[SIMD_SIZE_ALIGN(2048 + 1 + 32)];

@@ -38,6 +38,60 @@
 #include <arm_neon.h>
 #endif
 
+/*! \def RAPIDJSON_BOUNDED_SCANCOPY
+    \ingroup RAPIDJSON_CONFIG
+    \brief Enable the bounded SSE2/NEON string-body scan for length-bounded input streams.
+
+    Selects a core only where the compiler reports one: little-endian ARM NEON, or SSE2 on x86.
+    Defining it elsewhere, cl.exe included, is a no-op.
+
+    Must be defined uniformly across the whole build: it selects members of GenericReader, so
+    defining it in some translation units but not others is an ODR violation with no diagnostic.
+    What has to be uniform is the selected core, not just the macro: the header derives the core
+    from __SSE2__ and __ARM_NEON, which follow each translation unit's own architecture flags
+    (-msse2, -mfpu=neon), and from RAPIDJSON_ENDIAN, which a consumer may override per translation
+    unit, so defining the macro everywhere while varying any of those leaves the same silent ODR
+    violation.
+*/
+#ifndef RAPIDJSON_BOUNDED_SCANCOPY
+#ifdef RAPIDJSON_DOXYGEN_RUNNING
+#define RAPIDJSON_BOUNDED_SCANCOPY  // force generation of documentation
+#endif
+#endif // !defined(RAPIDJSON_BOUNDED_SCANCOPY)
+#ifdef RAPIDJSON_BOUNDED_SCANCOPY
+// Bounded counterpart of the RAPIDJSON_SIMD string-body scan, for length-bounded streams: those kernels
+// stop only at a NUL sentinel, so none of them can serve a stream whose end is a length.
+// Keyed on the compiler's architecture macros and not on RAPIDJSON_SSE2/RAPIDJSON_NEON, so that enabling
+// this kernel does not also enable RAPIDJSON_SIMD and every sentinel kernel with it.
+// The NEON core recovers a byte index from a 64-bit lane with clzll, so it requires little-endian
+// lanes; __ARM_NEON is predefined on AArch64 irrespective of endianness, so RAPIDJSON_ENDIAN decides.
+// Set when this target provides a bounded core, whether or not the selection below picks one. The unit
+// test asserts the two agree, so the architecture terms exist in one place only.
+#if ((defined(__ARM_NEON) || defined(__ARM_NEON__)) && RAPIDJSON_ENDIAN == RAPIDJSON_LITTLEENDIAN) \
+ || (defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__)))
+#define RAPIDJSON_BOUNDED_SCANCOPY_PLATFORM
+#endif
+#if (defined(__ARM_NEON) || defined(__ARM_NEON__)) && RAPIDJSON_ENDIAN == RAPIDJSON_LITTLEENDIAN
+#define RAPIDJSON_BOUNDED_SCANCOPY_NEON
+#include <arm_neon.h>
+#elif defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__))
+// __SSE2__ is also defined on ppc64le builds that emulate SSE over AltiVec.
+#define RAPIDJSON_BOUNDED_SCANCOPY_SSE2
+#include <emmintrin.h>
+#endif
+
+/*! \def RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE
+    \ingroup RAPIDJSON_CONFIG
+    \brief Invoked once on entry to the bounded string-body core. Expands to nothing.
+
+    The bounded core is output-identical to the scalar path it replaces, so no parse result can show
+    whether it ran. The unit test defines this to count entries.
+*/
+#ifndef RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE
+#define RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE() ((void)0)
+#endif
+#endif // RAPIDJSON_BOUNDED_SCANCOPY
+
 #ifdef __clang__
 RAPIDJSON_DIAG_PUSH
 RAPIDJSON_DIAG_OFF(old-style-cast)
@@ -1071,6 +1125,124 @@ private:
     static RAPIDJSON_FORCEINLINE void ScanCopyUnescapedString(InputStream&, OutputStream&) {
             // Do nothing for generic version
     }
+
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON) || defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2)
+    // Copies the leading run of ordinary bytes of [p, end) into os and returns the new read
+    // position, stopping at -- never consuming -- the first '"', '\\' or byte below 0x20.
+    // The length bound, not a NUL sentinel and not alignment, is what keeps every load in range.
+    static RAPIDJSON_FORCEINLINE const char* ScanCopyUnescapedStringTail(const char* p, const char* end, StackStream<char>& os) {
+        while (p != end) {
+            const char c = *p;
+            // Unsigned, so that bytes 0x80-0xFF are ordinary text and not control characters.
+            if (RAPIDJSON_UNLIKELY(c == '\"') || RAPIDJSON_UNLIKELY(c == '\\') || RAPIDJSON_UNLIKELY(static_cast<unsigned char>(c) < 0x20))
+                break;
+            os.Put(c);
+            ++p;
+        }
+        return p;
+    }
+#endif
+
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2)
+    static RAPIDJSON_FORCEINLINE const char* ScanCopyUnescapedStringBounded(const char* p, const char* end, StackStream<char>& os) {
+        RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE();
+        static const char dquote[16] = { '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"' };
+        static const char bslash[16] = { '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\' };
+        static const char space[16]  = { 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F };
+        const __m128i dq = _mm_loadu_si128(reinterpret_cast<const __m128i *>(&dquote[0]));
+        const __m128i bs = _mm_loadu_si128(reinterpret_cast<const __m128i *>(&bslash[0]));
+        const __m128i sp = _mm_loadu_si128(reinterpret_cast<const __m128i *>(&space[0]));
+
+        // The bound is written as a difference so that no pointer before the buffer is ever formed.
+        while (end - p >= 16) {
+            // Unaligned: there is deliberately no alignment prologue, the bound above is the guard.
+            const __m128i s = _mm_loadu_si128(reinterpret_cast<const __m128i *>(p));
+            const __m128i t1 = _mm_cmpeq_epi8(s, dq);
+            const __m128i t2 = _mm_cmpeq_epi8(s, bs);
+            const __m128i t3 = _mm_cmpeq_epi8(_mm_max_epu8(s, sp), sp); // s < 0x20 <=> max(s, 0x1F) == 0x1F
+            const __m128i x = _mm_or_si128(_mm_or_si128(t1, t2), t3);
+            const unsigned short r = static_cast<unsigned short>(_mm_movemask_epi8(x));
+            if (RAPIDJSON_LIKELY(r == 0)) {
+                _mm_storeu_si128(reinterpret_cast<__m128i *>(os.Push(16)), s);
+                p += 16;
+                continue;
+            }
+            // Index of the first escaped byte.
+            // No _MSC_VER arm: every compiler that reaches this kernel provides __builtin_ffs, clang-cl included.
+            // cl.exe does not reach it at all: RAPIDJSON_BOUNDED_SCANCOPY_SSE2 needs __SSE2__ with __x86_64__/__i386__.
+            const SizeType length = static_cast<SizeType>(__builtin_ffs(r) - 1);
+            if (length != 0) {
+                char* q = reinterpret_cast<char*>(os.Push(length));
+                for (SizeType i = 0; i < length; i++)
+                    q[i] = p[i];
+
+                p += length;
+            }
+            return p;
+        }
+
+        return ScanCopyUnescapedStringTail(p, end, os);
+    }
+#elif defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
+    static RAPIDJSON_FORCEINLINE const char* ScanCopyUnescapedStringBounded(const char* p, const char* end, StackStream<char>& os) {
+        RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE();
+        const uint8x16_t s0 = vmovq_n_u8('"');
+        const uint8x16_t s1 = vmovq_n_u8('\\');
+        const uint8x16_t s2 = vmovq_n_u8(32);
+
+        // The bound is written as a difference so that no pointer before the buffer is ever formed.
+        while (end - p >= 16) {
+            // Unaligned: there is deliberately no alignment prologue, the bound above is the guard.
+            const uint8x16_t s = vld1q_u8(reinterpret_cast<const uint8_t *>(p));
+            uint8x16_t x = vceqq_u8(s, s0);
+            x = vorrq_u8(x, vceqq_u8(s, s1));
+            x = vorrq_u8(x, vcltq_u8(s, s2));   // subsumes the separate '\b' term of the kernels below
+
+            x = vrev64q_u8(x);                     // Rev in 64
+            const uint64_t low = vgetq_lane_u64(vreinterpretq_u64_u8(x), 0);   // extract
+            const uint64_t high = vgetq_lane_u64(vreinterpretq_u64_u8(x), 1);  // extract
+
+            SizeType length;
+            // clzll is only evaluated on a non-zero lane; clzll(0) is undefined.
+            if (low != 0)
+                length = static_cast<SizeType>(internal::clzll(low) >> 3);
+            else if (high != 0)
+                length = static_cast<SizeType>(8 + (internal::clzll(high) >> 3));
+            else {
+                vst1q_u8(reinterpret_cast<uint8_t *>(os.Push(16)), s);
+                p += 16;
+                continue;
+            }
+            if (length != 0) {
+                char* q = reinterpret_cast<char*>(os.Push(length));
+                for (SizeType i = 0; i < length; i++)
+                    q[i] = p[i];
+
+                p += length;
+            }
+            return p;
+        }
+
+        return ScanCopyUnescapedStringTail(p, end, os);
+    }
+#endif
+
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON) || defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2)
+    // MemoryStream -> StackStream<char>
+    static RAPIDJSON_FORCEINLINE void ScanCopyUnescapedString(MemoryStream& is, StackStream<char>& os) {
+        // A raw block copy is what the generic path reduces to only when no transcoding is required.
+        if (!internal::IsSame<SourceEncoding, TargetEncoding>::Value)
+            return;
+        is.src_ = ScanCopyUnescapedStringBounded(is.src_, is.end_, os);
+    }
+
+    // EncodedInputStream<UTF8<>, MemoryStream> -> StackStream<char>
+    static RAPIDJSON_FORCEINLINE void ScanCopyUnescapedString(EncodedInputStream<UTF8<>, MemoryStream>& is, StackStream<char>& os) {
+        if (!internal::IsSame<SourceEncoding, TargetEncoding>::Value)
+            return;
+        is.is_.src_ = ScanCopyUnescapedStringBounded(is.is_.src_, is.is_.end_, os);
+    }
+#endif
 
 #if defined(RAPIDJSON_SSE2) || defined(RAPIDJSON_SSE42)
     // StringStream -> StackStream<char>
