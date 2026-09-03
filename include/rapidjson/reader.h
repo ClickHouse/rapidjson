@@ -45,9 +45,11 @@
     Must be defined uniformly across the whole build: it selects members of GenericReader, so
     defining it in some translation units but not others is an ODR violation with no diagnostic.
 */
+#ifndef RAPIDJSON_BOUNDED_SCANCOPY
 #ifdef RAPIDJSON_DOXYGEN_RUNNING
 #define RAPIDJSON_BOUNDED_SCANCOPY  // force generation of documentation
 #endif
+#endif // !defined(RAPIDJSON_BOUNDED_SCANCOPY)
 #ifdef RAPIDJSON_BOUNDED_SCANCOPY
 // Bounded counterpart of the RAPIDJSON_SIMD string-body scan, for length-bounded streams.
 // Keyed on the compiler's architecture macros and not on RAPIDJSON_SSE2/RAPIDJSON_NEON: those also
@@ -1140,7 +1142,8 @@ private:
                 continue;
             }
             // Index of the first escaped byte.
-            // No _MSC_VER arm: the gate above needs __SSE2__ with __x86_64__/__i386__, which cl.exe never defines.
+            // No _MSC_VER arm: every compiler that reaches this kernel provides __builtin_ffs, clang-cl included.
+            // cl.exe does not reach it at all: RAPIDJSON_BOUNDED_SCANCOPY_SSE2 needs __SSE2__ with __x86_64__/__i386__.
             const SizeType length = static_cast<SizeType>(__builtin_ffs(r) - 1);
             if (length != 0) {
                 char* q = reinterpret_cast<char*>(os.Push(length));

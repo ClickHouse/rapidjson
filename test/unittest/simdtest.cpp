@@ -25,9 +25,11 @@
 #  define RAPIDJSON_NEON
 #endif
 
+#ifndef RAPIDJSON_BOUNDED_SCANCOPY
 // The library derives the bounded kernel from the same architecture macros, but never enables it on
 // its own; a consumer opts in, and so does this test.
 #define RAPIDJSON_BOUNDED_SCANCOPY
+#endif
 
 #define RAPIDJSON_NAMESPACE rapidjson_simd
 
