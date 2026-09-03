@@ -38,6 +38,14 @@
 #include <arm_neon.h>
 #endif
 
+/*! \def RAPIDJSON_BOUNDED_SCANCOPY
+    \ingroup RAPIDJSON_CONFIG
+    \brief Enable the bounded SSE2/NEON string-body scan for length-bounded input streams.
+
+    Must be defined uniformly across the whole build: it selects members of GenericReader, so
+    defining it in some translation units but not others is an ODR violation with no diagnostic.
+*/
+#ifdef RAPIDJSON_BOUNDED_SCANCOPY
 // Bounded counterpart of the RAPIDJSON_SIMD string-body scan, for length-bounded streams.
 // Keyed on the compiler's architecture macros and not on RAPIDJSON_SSE2/RAPIDJSON_NEON: those also
 // define RAPIDJSON_SIMD, whose kernels stop only at a NUL sentinel and so read past the end of a
@@ -50,6 +58,7 @@
 #define RAPIDJSON_BOUNDED_SCANCOPY_SSE2
 #include <emmintrin.h>
 #endif
+#endif // RAPIDJSON_BOUNDED_SCANCOPY
 
 #ifdef __clang__
 RAPIDJSON_DIAG_PUSH
