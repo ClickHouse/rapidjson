@@ -1153,7 +1153,7 @@ private:
         const __m128i bs = _mm_loadu_si128(reinterpret_cast<const __m128i *>(&bslash[0]));
         const __m128i sp = _mm_loadu_si128(reinterpret_cast<const __m128i *>(&space[0]));
 
-        // end - p >= 16, never p <= end - 16: the latter forms a pointer before the buffer.
+        // The bound is written as a difference so that no pointer before the buffer is ever formed.
         while (end - p >= 16) {
             // Unaligned: there is deliberately no alignment prologue, the bound above is the guard.
             const __m128i s = _mm_loadu_si128(reinterpret_cast<const __m128i *>(p));
@@ -1190,7 +1190,7 @@ private:
         const uint8x16_t s1 = vmovq_n_u8('\\');
         const uint8x16_t s2 = vmovq_n_u8(32);
 
-        // end - p >= 16, never p <= end - 16: the latter forms a pointer before the buffer.
+        // The bound is written as a difference so that no pointer before the buffer is ever formed.
         while (end - p >= 16) {
             // Unaligned: there is deliberately no alignment prologue, the bound above is the guard.
             const uint8x16_t s = vld1q_u8(reinterpret_cast<const uint8_t *>(p));
