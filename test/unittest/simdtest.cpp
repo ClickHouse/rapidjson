@@ -237,6 +237,7 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedString)) {
     TestScanCopyUnescapedString<kParseInsituFlag, InsituStringStreamHolder>();
     EXPECT_EQ(before, g_boundedCoreEntries);
 
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2) || defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
     // Length-bounded shapes, which the bounded kernel serves. Insitu is not among them:
     // MemoryStream::PutBegin() asserts.
     before = g_boundedCoreEntries;
@@ -250,6 +251,7 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedString)) {
     before = g_boundedCoreEntries;
     TestScanCopyUnescapedString<kParseDefaultFlags, ExactSizeMemoryStreamHolder>();
     EXPECT_LT(before, g_boundedCoreEntries);
+#endif
 }
 
 // GenericStringStream<ASCII<> > has no ScanCopyUnescapedString overload of its own, so it reaches
@@ -305,6 +307,7 @@ void MakeGuardedBody(char* out, char offender) {
     *p = '\0';
 }
 
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2) || defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
 // Two properties of the bounded scan that the sweep above cannot reach: it must decline when the
 // source and target encodings differ, and it must stop at a byte below 0x20. Each case parses one
 // document through a path that has no bounded overload and through the bounded ones, and requires
@@ -352,6 +355,7 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedStringGuards)) {
         ExpectSameOutcome(scalar, encoded);
     }
 }
+#endif
 
 TEST(SIMD, SIMD_SUFFIX(ScanWriteUnescapedString)) {
     char buffer[SIMD_SIZE_ALIGN(2048 + 1 + 32)];
