@@ -31,6 +31,12 @@
 #define RAPIDJSON_BOUNDED_SCANCOPY
 #endif
 
+// The bounded core produces the same bytes as the scalar path it replaces, so entry into it is not
+// observable from any parse result. The library offers this hook for exactly that; count entries.
+// Qualified, because the macro expands inside a member of GenericReader.
+unsigned long long g_boundedCoreEntries = 0;
+#define RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE() (++::g_boundedCoreEntries)
+
 #define RAPIDJSON_NAMESPACE rapidjson_simd
 
 #include "unittest.h"
@@ -221,13 +227,31 @@ void TestScanCopyUnescapedString() {
 }
 
 TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedString)) {
+    // Each shape is bracketed by the entry counter, because the bounded core emits the same bytes as
+    // the scalar path: with the core never entered, every assertion inside the sweep still passes.
+    unsigned long long before;
+
+    before = g_boundedCoreEntries;
     TestScanCopyUnescapedString<kParseDefaultFlags, StringStreamHolder>();
+    EXPECT_EQ(before, g_boundedCoreEntries);    // sentinel-terminated: no bounded overload
+
+    before = g_boundedCoreEntries;
     TestScanCopyUnescapedString<kParseInsituFlag, InsituStringStreamHolder>();
+    EXPECT_EQ(before, g_boundedCoreEntries);
+
     // Length-bounded shapes, which the bounded kernel serves. Insitu is not among them:
     // MemoryStream::PutBegin() asserts.
+    before = g_boundedCoreEntries;
     TestScanCopyUnescapedString<kParseDefaultFlags, MemoryStreamHolder>();
+    EXPECT_LT(before, g_boundedCoreEntries);
+
+    before = g_boundedCoreEntries;
     TestScanCopyUnescapedString<kParseDefaultFlags, EncodedMemoryStreamHolder>();
+    EXPECT_LT(before, g_boundedCoreEntries);
+
+    before = g_boundedCoreEntries;
     TestScanCopyUnescapedString<kParseDefaultFlags, ExactSizeMemoryStreamHolder>();
+    EXPECT_LT(before, g_boundedCoreEntries);
 }
 
 // GenericStringStream<ASCII<> > has no ScanCopyUnescapedString overload of its own, so it reaches
@@ -295,13 +319,20 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedStringGuards)) {
     // target because ASCII<>::Encode asserts on a non-ASCII codepoint.
     MakeGuardedBody(json, static_cast<char>(0xA2));
     {
-        ParseOutcome scalar, memory, encoded;
+        ParseOutcome scalar, memory, encoded, sameEncoding;
         ParseThrough<GenericReader<ASCII<>, UTF8<> >, AsciiStringStreamHolder>(json, scalar);
+        const unsigned long long beforeGuarded = g_boundedCoreEntries;
         ParseThrough<GenericReader<ASCII<>, UTF8<> >, MemoryStreamHolder>(json, memory);
         ParseThrough<GenericReader<ASCII<>, UTF8<> >, EncodedMemoryStreamHolder>(json, encoded);
+        EXPECT_EQ(beforeGuarded, g_boundedCoreEntries);     // declined before reaching the core
         EXPECT_TRUE(scalar.error);  // otherwise the arms below agree on nothing having happened
         ExpectSameOutcome(scalar, memory);
         ExpectSameOutcome(scalar, encoded);
+        // Same document, same shape, encodings equal: only the counter is asserted, because for
+        // UTF8 to UTF8 the byte is ordinary text, so this arm parses and its outcome differs.
+        const unsigned long long beforeSame = g_boundedCoreEntries;
+        ParseThrough<Reader, MemoryStreamHolder>(json, sameEncoding);
+        EXPECT_LT(beforeSame, g_boundedCoreEntries);
     }
 
     // A byte below 0x20 is not valid unescaped JSON, and no body in the sweep above contains one.
@@ -313,8 +344,10 @@ TEST(SIMD, SIMD_SUFFIX(ScanCopyUnescapedStringGuards)) {
         ParseOutcome scalar, sentinel, memory, encoded;
         ParseThrough<GenericReader<ASCII<>, ASCII<> >, AsciiStringStreamHolder>(json, scalar);
         ParseThrough<Reader, StringStreamHolder>(json, sentinel);
+        const unsigned long long before = g_boundedCoreEntries;
         ParseThrough<Reader, MemoryStreamHolder>(json, memory);
         ParseThrough<Reader, EncodedMemoryStreamHolder>(json, encoded);
+        EXPECT_LT(before, g_boundedCoreEntries);    // the core ran and stopped at the byte itself
         EXPECT_TRUE(scalar.error);
         ExpectSameOutcome(scalar, sentinel);
         ExpectSameOutcome(scalar, memory);

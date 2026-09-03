@@ -72,6 +72,17 @@
 #define RAPIDJSON_BOUNDED_SCANCOPY_SSE2
 #include <emmintrin.h>
 #endif
+
+/*! \def RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE
+    \ingroup RAPIDJSON_CONFIG
+    \brief Invoked once on entry to the bounded string-body core. Expands to nothing.
+
+    The bounded core is output-identical to the scalar path it replaces, so no parse result can show
+    whether it ran. The unit test defines this to count entries.
+*/
+#ifndef RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE
+#define RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE() ((void)0)
+#endif
 #endif // RAPIDJSON_BOUNDED_SCANCOPY
 
 #ifdef __clang__
@@ -1127,6 +1138,7 @@ private:
 
 #if defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2)
     static RAPIDJSON_FORCEINLINE const char* ScanCopyUnescapedStringBounded(const char* p, const char* end, StackStream<char>& os) {
+        RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE();
         static const char dquote[16] = { '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"', '\"' };
         static const char bslash[16] = { '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\', '\\' };
         static const char space[16]  = { 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F };
@@ -1166,6 +1178,7 @@ private:
     }
 #elif defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
     static RAPIDJSON_FORCEINLINE const char* ScanCopyUnescapedStringBounded(const char* p, const char* end, StackStream<char>& os) {
+        RAPIDJSON_BOUNDED_SCANCOPY_OBSERVE();
         const uint8x16_t s0 = vmovq_n_u8('"');
         const uint8x16_t s1 = vmovq_n_u8('\\');
         const uint8x16_t s2 = vmovq_n_u8(32);
