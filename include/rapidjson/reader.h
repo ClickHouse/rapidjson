@@ -1191,11 +1191,16 @@ private:
 #if defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON) || defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2)
     // MemoryStream -> StackStream<char>
     static RAPIDJSON_FORCEINLINE void ScanCopyUnescapedString(MemoryStream& is, StackStream<char>& os) {
+        // A raw block copy is what the generic path reduces to only when no transcoding is required.
+        if (!internal::IsSame<SourceEncoding, TargetEncoding>::Value)
+            return;
         is.src_ = ScanCopyUnescapedStringBounded(is.src_, is.end_, os);
     }
 
     // EncodedInputStream<UTF8<>, MemoryStream> -> StackStream<char>
     static RAPIDJSON_FORCEINLINE void ScanCopyUnescapedString(EncodedInputStream<UTF8<>, MemoryStream>& is, StackStream<char>& os) {
+        if (!internal::IsSame<SourceEncoding, TargetEncoding>::Value)
+            return;
         is.is_.src_ = ScanCopyUnescapedStringBounded(is.is_.src_, is.is_.end_, os);
     }
 #endif
