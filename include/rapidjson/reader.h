@@ -64,6 +64,12 @@
 // this kernel does not also enable RAPIDJSON_SIMD and every sentinel kernel with it.
 // The NEON core recovers a byte index from a 64-bit lane with clzll, so it requires little-endian
 // lanes; __ARM_NEON is predefined on AArch64 irrespective of endianness, so RAPIDJSON_ENDIAN decides.
+// Set when this target provides a bounded core, whether or not the selection below picks one. The unit
+// test asserts the two agree, so the architecture terms exist in one place only.
+#if ((defined(__ARM_NEON) || defined(__ARM_NEON__)) && RAPIDJSON_ENDIAN == RAPIDJSON_LITTLEENDIAN) \
+ || (defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__)))
+#define RAPIDJSON_BOUNDED_SCANCOPY_PLATFORM
+#endif
 #if (defined(__ARM_NEON) || defined(__ARM_NEON__)) && RAPIDJSON_ENDIAN == RAPIDJSON_LITTLEENDIAN
 #define RAPIDJSON_BOUNDED_SCANCOPY_NEON
 #include <arm_neon.h>

@@ -44,12 +44,10 @@ unsigned long long g_boundedCoreEntries = 0;
 #include "rapidjson/reader.h"
 #include "rapidjson/writer.h"
 
-// The architecture macros are restated here, as at the top of this file, because RAPIDJSON_SSE2 and
-// RAPIDJSON_NEON are not the predicate the bounded kernel uses: on ppc64le __SSE2__ is defined by
-// SSE-over-AltiVec emulation and the bounded kernel correctly selects no core.
-#if defined(RAPIDJSON_BOUNDED_SCANCOPY) \
- && (((defined(__ARM_NEON) || defined(__ARM_NEON__)) && RAPIDJSON_ENDIAN == RAPIDJSON_LITTLEENDIAN) \
-     || (defined(__SSE2__) && (defined(__x86_64__) || defined(__i386__)))) \
+// RAPIDJSON_SSE2 and RAPIDJSON_NEON above are not the predicate the bounded kernel uses: it declines
+// on some targets that define them. The header publishes its own predicate, so the architecture terms
+// are not restated here and the two cannot drift.
+#if defined(RAPIDJSON_BOUNDED_SCANCOPY_PLATFORM) \
  && !defined(RAPIDJSON_BOUNDED_SCANCOPY_SSE2) && !defined(RAPIDJSON_BOUNDED_SCANCOPY_NEON)
 #error "RAPIDJSON_BOUNDED_SCANCOPY selected no core on a platform that provides one; the bounded arms below would silently test the scalar path"
 #endif
