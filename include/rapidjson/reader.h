@@ -1136,14 +1136,8 @@ private:
                 p += 16;
                 continue;
             }
-            SizeType length;
-#ifdef _MSC_VER         // Find the index of first escaped
-            unsigned long offset;
-            _BitScanForward(&offset, r);
-            length = offset;
-#else
-            length = static_cast<SizeType>(__builtin_ffs(r) - 1);
-#endif
+            // Index of the first escaped byte.
+            const SizeType length = static_cast<SizeType>(__builtin_ffs(r) - 1);
             if (length != 0) {
                 char* q = reinterpret_cast<char*>(os.Push(length));
                 for (SizeType i = 0; i < length; i++)
